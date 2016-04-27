@@ -1,0 +1,271 @@
+---
+title: "Running Innovation - US Airlines"
+author: "Carlos Munoz"
+date: "27 de abril de 2016"
+output: word_document
+---
+The Exploratory Data Analysis will try to identify the online presence of US Airlines in the "Tweetersphere", their reputation, and which are the main causes for customer dissatisfaction. Giving that the Airline Industry is a fairly commoditized market, understanding the main causes of dissatisfaction and how an airline compares to its competitors can offer insights on competitive advantages and how to capitalize on them, and on customer satisfaction pains and how to tackle them.
+
+The .rmd file with the code can be found at: 
+https://github.com/CarlosEMS/Twitter-US-Airlines-Sentiment
+
+
+Load libraries
+
+```{r, echo=FALSE,message=FALSE}
+library(gridExtra)    #Library for stacking ggplot graphs
+library(plyr)         #Library for data wrangling
+library(dplyr)        #Library for sequential approach to data wrangling
+library(ggplot2)      #Library for nicer visualizations
+library(tidyr)        #Library for tidying/reshaping data
+#library(ggmap)       #Library for geomapping
+library (RgoogleMaps) #Library for geomapping
+```
+
+Set working directory and load dataset
+
+```{r, echo=FALSE,message=FALSE}
+#Set working directory ---> Feel free to change it to run the .csv
+setwd("~/2.IE/Term 3 - Spring/Running Innovation Creation Processes/airline-twitter-sentiment")
+#Tweets <- read.xlsx2("Tweets_4.xls", sheetName="Tweets", header=TRUE)
+Tweets <-read.csv("Tweets.csv",header=TRUE,sep=",")
+```
+
+DATA QUALITY ANALYSIS
+The first step of an EDA is analyzing what the dataset is about, the quality issues of the data and potential ways to tackle and clean the data. 
+The dataset is providing information on tweets generated between February 16th 2015 and February 24th 2015 where one or several of the main six US airlines are mentioned in the hashtags (Delta, Southwest, US Airways, American Airlines, United and Virgin). Besides the expected fields we can find in such dataset (airline, day tweeted, ID, user, text, location) the dataset has already been curated to provide information on sentiment analysis (sentiment and reasons of dissatisfaction)
+A preliminary analysis shows some fields with some data quality issues, both in terms of inherent quality and quantity of NAs.
+
+```{r, echo=FALSE,message=FALSE}
+#convert date-time into proper date-time format
+Tweets$tweet_created<-as.POSIXlt(Tweets$tweet_created) 
+
+#variable creation: split date into several columns --> month, weekday, day of month
+Tweets<-Tweets %>% 
+  mutate(tweet_created_m=months(tweet_created),tweet_created_wday=weekdays(tweet_created))
+Tweets$tweet_created_day <- Tweets$tweet_created$mday
+
+#reconvert format (it seems it is needed)
+Tweets$tweet_created<-as.POSIXct(Tweets$tweet_created) 
+
+#check which days are tweets coming from
+dofmonth<-Tweets%>%
+   group_by(tweet_created_day,tweet_created_wday)%>%
+   summarise(count=n())
+
+#check NAs
+Tweets_NAs <- as.data.frame(apply(Tweets, 2, function(x) gsub("^$|^ $", NA, x)))
+apply(Tweets_NAs, 2, function(x) sum(is.na(x)))
+
+```
+
+Data transformation: some of the fields have been transformed to provide additional information, ad new fields have been derived: day_of_month (numeric), weekday (categorical) and month (categorical) from date, USA (boolean) and continent (categorical) from Tweet_location.
+Perhaps the best way to try and ensure consistency of analysis is gathering data from 1 week. That would imply taking away Monday 16th and Tuesday 24th, the first and last day of the interval. That would ensure tweets captured belong to 1 full week.
+.
+
+```{r, echo=FALSE,message=FALSE}
+#Filter to get a 7-day interval
+Tweets<-Tweets%>%
+  filter(tweet_created_day>16, tweet_created_day<24)
+```
+
+
+
+```{r, echo=FALSE,message=FALSE}
+#Add another column with the count of tweets per user to visualize the most active users
+tweets_user<-Tweets%>%
+  group_by(name)%>%
+  summarise(tweets_per_user=n())
+
+#categorizing most prolific users
+Tweets<-join(Tweets,tweets_user, by="name", type="left",match="all")
+```
+
+Creation of some data frames for inspecion on some of the variables that could help get an idea on how to tacke the problem.
+
+```{r, echo=FALSE,message=FALSE}
+#get a numeric idea on amount of records and retweets per airline
+Tweets<-as.data.frame(Tweets)
+Airlines<-Tweets %>%
+  group_by(airline, airline_sentiment) %>%
+  summarise(count=n(), total_tweets=sum(retweet_count)) %>%
+  mutate(retweeted_percentage=total_tweets/count)
+
+#get a numeric idea on negative records and retweets of negative sentiment per category
+#more retweets may indicate other user's similar problems  --> most important issues to tackle
+Negative<-Tweets %>%
+  filter(airline_sentiment=="negative")%>%
+  group_by(airline, negativereason) %>%
+  summarise(count=n(), total_tweets=sum(retweet_count)) %>%
+  mutate(retweeted_percentage=total_tweets/count)
+
+#filter by gold customers
+Gold<-Tweets %>%
+  filter(airline_sentiment_gold!="")%>%
+  group_by(airline, airline_sentiment, negativereason) %>%
+  summarise(count=n(), total_tweets=sum(retweet_count))
+#Gold #only 40 tweets out of the 15.000 are from gold customers, very few! Seems not worth focusing on them
+
+#Users with most retweets
+TopUsers<-Tweets %>%
+  group_by(name) %>%
+  summarise(tweets_sent=n(), retweets=sum(retweet_count)) %>%
+  mutate(retweets_per_tweet=retweets/tweets_sent) %>%
+  arrange(desc(retweets_per_tweet))
+
+#Visualize retweets per timezone
+Timezones<-Tweets %>%
+  group_by(user_timezone) %>%
+  summarize(count=n())
+```
+
+DATA ANALYSIS
+The following charts have been created in order to figure out what the sentiment of customers towards specific airlines is, how location affect that sentiment and what are the main reasons of dissatisfaction are. Many of the bar charts display the information in three levels for easy comparison among them:
+-	Top chart: overall amount of tweets. Good for getting an understanding of volume
+-	Medium chart: tweets per category, stacked. Good for comparing across categories
+-	Bottom chart: retweets per category, stacked. Only retweets are displayed, as they could signal other users agreeing with the tweet statement.
+Overall sentiment per airline (visualization of NPS - Net Promoting Score)
+
+```{r, echo=FALSE,message=FALSE}
+#NPS per airline (count of positive, neutral and negative tweets)
+NPS_airlines <- ggplot(Tweets, aes(airline, fill=airline_sentiment)) + geom_bar(position = "stack")
+#NPS per airline, stacked for easier comparison accross airlines
+NPS_airlines_stacked <- ggplot(Tweets, aes(airline, fill=airline_sentiment)) + geom_bar(position = "fill")
+#NPS per airline stacked, only of retweeted records
+NPS_airlines_stacked_retweets <- ggplot(Tweets[Tweets$retweet_count>0,], aes(airline, fill=airline_sentiment)) + geom_bar(position = "fill")
+
+#Displaying the three plots together
+grid.arrange(NPS_airlines+ theme(legend.position="none"),NPS_airlines_stacked+ theme(legend.position="none"),NPS_airlines_stacked_retweets+ theme(legend.position="bottom"),nrow=3)
+```
+
+Analysis of reasons for dissatisfaction of tweets with negative sentiment, split per airline:
+
+```{r, echo=FALSE,message=FALSE}
+#Complaint type per airline
+complaint_airlines <- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(airline, fill=negativereason)) + geom_bar(position = "stack")
+#Complaint type per airline, stacked for comparison across airlines
+complaint_airlines_stacked<- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(airline, fill=negativereason)) + geom_bar(position = "fill")
+#Complaint type per airline stacked, only of retweeted records
+complaint_airlines_stacked_retweets<- ggplot(Tweets[Tweets$airline_sentiment=="negative" & Tweets$retweet_count>0,], aes(airline, fill=negativereason)) + geom_bar(position = "fill")
+
+#Displaying the three plots together
+grid.arrange(complaint_airlines + theme(legend.position="none"),complaint_airlines_stacked + theme(legend.position="none"),complaint_airlines_stacked_retweets + theme(legend.position="bottom"),nrow=3)
+```
+
+Comparison among tweets' sentiment from USA and from outside USA
+
+```{r, echo=FALSE,message=FALSE}
+#A visual inspection at the blank user timezones seems to indicate the majority are US citizens therefore I will round up and assume all are US citizens
+write.table (Timezones, file="timezones.csv",append=FALSE,row.names =FALSE ,col.names = TRUE, sep = ",")
+Timezones=read.csv("timezones2.csv",header=TRUE,sep = ";")
+
+#now I can perform a join with the Tweets dataset and run a similar analysis but splitting based on user location: USA vs no USA and per region of the word
+Tweets<-join(Tweets,Timezones, by="user_timezone", type="left",match="all")
+```
+
+Analysis on tweet sentiment per continent
+
+```{r, echo=FALSE,message=FALSE}
+#NPS split on USA vs not USA
+NPS_USA_or_not <- ggplot(Tweets, aes(USA, fill=airline_sentiment)) + geom_bar(position = "stack")
+#Same, but stacked for easier comparison
+NPS_USA_or_not_stacked <- ggplot(Tweets, aes(USA, fill=airline_sentiment)) + geom_bar(position = "fill")
+
+#Visualizing both graphs together
+grid.arrange(NPS_USA_or_not+ theme(legend.position="none"),NPS_USA_or_not_stacked+ theme(legend.position="bottom"),nrow=2)
+
+#NPS per continent
+NPS_timezone <- ggplot(Tweets, aes(Area, fill=airline_sentiment)) + geom_bar(position = "stack")
+#NPS per continent, staked (neccesary to compare due to large difference on number of records)
+NPS_timezone_stacked <- ggplot(Tweets, aes(Area, fill=airline_sentiment)) + geom_bar(position = "fill")
+
+#Visualizing both graphs together
+grid.arrange(NPS_timezone+ theme(legend.position="none"),NPS_timezone_stacked+ theme(legend.position="bottom"),nrow=2)
+```
+
+Analysis of reasons for dissatisfaction of tweets with negative sentiment per continent:
+
+```{r, echo=FALSE,message=FALSE}
+#Negative sentiment of users, on a continent split instead of airline split
+complaint_timezone <- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(Area, fill=negativereason)) + geom_bar(position = "stack")
+#Same but stacked for easier comparison across continents
+complaint_timezone_stacked<- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(Area, fill=negativereason)) + geom_bar(position = "fill")
+#Negative sentiment stacked, only of retweeted records
+complaint_timezone_stacked_retweets<- ggplot(Tweets[Tweets$airline_sentiment=="negative" & Tweets$retweet_count>0,], aes(Area, fill=negativereason)) + geom_bar(position = "fill")
+
+#The three graphs plotted together
+grid.arrange(complaint_timezone + theme(legend.position="none"),complaint_timezone_stacked + theme(legend.position="none"),complaint_timezone_stacked_retweets + theme(legend.position="bottom"),nrow=3)
+```
+
+Retweet analysis
+
+```{r, echo=FALSE,message=FALSE}
+#Analysis of retweets, plotting number of tweets retweeted
+Retweets<-as.data.frame(table(Tweets$retweet_count))
+colnames(Retweets)<-c("n_of_retweets","frequency")
+Retweets$n_of_retweets<-as.numeric(Retweets$n_of_retweets)
+qplot(data= Retweets,x=n_of_retweets,y=frequency, log="y", main="frequency of retweets (Y axis log scale)")
+
+#All this analysis has been done in previous chunks, although displaying the information in a different way, with different groupings 
+# #new data frame only with retweeted sentiment
+# Retweeted<-Tweets[Tweets$retweet_count>0,]
+# 
+# #comparison of retweeted sentiment with overall tweeted sentiment
+# NPS_airlines_retweeted_stacked <- ggplot(Retweeted, aes(airline, fill=airline_sentiment)) + geom_bar(position = "fill")
+# 
+# grid.arrange(NPS_airlines_stacked+theme(legend.position="none"),NPS_airlines_retweeted_stacked+ theme(legend.position="bottom"),nrow=2)
+# 
+# complaint_airlines <- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(airline, fill=negativereason)) + geom_bar(position = "stack")
+# complaint_airlines_stacked<- ggplot(Tweets[Tweets$airline_sentiment=="negative",], aes(airline, fill=negativereason)) + geom_bar(position = "fill")
+# complaint_airlines_stacked_retweets<- ggplot(Tweets[Tweets$airline_sentiment=="negative" & Tweets$retweet_count>0,], aes(airline, fill=negativereason)) + geom_bar(position = "fill")
+# 
+# #comparing overall complaint causes with retweeted complaint causes
+# #already done, interesting to check problems that raise more concerns
+# grid.arrange(complaint_airlines_stacked + theme(legend.position="none"),complaint_airlines_stacked_retweets + theme(legend.position="bottom"),nrow=2)
+```
+
+Tweets worldwide and in US: geolocation is a powerful tool for visually identifying what is going on in a geographical area. The following two maps intend show sentiment-coded tweets. Only 10% of tweets from the dataset had geolocation coordinates, however it could be considered as a good sample of the whole population's sentiment.
+
+```{r, echo=FALSE,message=FALSE}
+#there is a lot of rubbish in the location of tweets, making it borderline impossible to turn that field into something useful
+Tweet_Location<-Tweets%>%
+  group_by(tweet_location)%>%
+  summarize(count=n())
+```
+
+Plot lat and lon of tweets on a google map
+
+```{r, echo=FALSE,message=FALSE}
+#Get only records with proper coordinates (around 8% of total number of records)
+Tweets_coord<-Tweets%>%
+  filter(tweet_coord!="")%>%
+  #filter(Tweets_coord!="[0.0, 0.0]")%>%
+  mutate(latlong=tweet_coord)%>%
+  separate(latlong,c("lat","long"),sep=" ")
+
+#Take out rubbish characters from lat and long and transform variables into numeric
+Tweets_coord$lat<-sub("[[]","",Tweets_coord$lat)
+Tweets_coord$lat<-sub("[,]","",Tweets_coord$lat)
+Tweets_coord$long<-sub("[]]","",Tweets_coord$long)
+Tweets_coord$lat<-as.numeric(Tweets_coord$lat)
+Tweets_coord$long<-as.numeric(Tweets_coord$long)
+
+#add a column with color depending on sentiment for nicer visualization
+Tweets_coord$color<-ifelse(Tweets_coord$airline_sentiment=="negative","red",ifelse(Tweets_coord$airline_sentiment=="neutral","blue","green"))
+
+#Display all tweets with geolocation on a world map
+PlotOnStaticMap(lat=Tweets_coord$lat,lon=Tweets_coord$long, size=c(640,640),col=Tweets_coord$color)
+#Get the map of USA from the server, as a majority of tweets are concentrated there
+USAmap<-GetMap(center=c(37,-98),zoom=4)
+#DIsplay all tweets over USA
+PlotOnStaticMap(USAmap,lat=Tweets_coord$lat,lon=Tweets_coord$long, size=c(640,640),col=Tweets_coord$color)
+```
+
+CONCLUSION
+Looking at the data it seems it would be useful to narrow down the problem by focusing on tweets written on US soil, as they account for 85% of total tweets and the Net Promoter Score (sentiment) is very similar to those from other countries. Also, Virgin seems to have the best NPS, especially looking at retweets, so perhaps diving into their business practices could be useful for competitors. Regarding dissatisfaction triggers, all airlines have Customer Service Issues as the main cause of dissatisfaction, generally followed by delays in flights. Diving into the specifics of both areas could help improve perceived quality and customer satisfaction for those airlines willing to do that analysis.
+
+OTHER DATA SOURCES TO USE
+Incorporating more detailed information on 2015's airline performance could help when comparing airlines' performance. Useful fields can be: US market share, average flights per day, cancelled flights ratio, on-time arrivals ratio, mishandled luggage ratio, denied boarding ratio and customer satisfaction score.
+If we were able to geolocate a higher percentage of tweets sent, a dataset with the geolocation of all airports in the world (or the US) could add a lot of value as the analysis could dive into which are the most conflicting airports for each company, and what the main cause of dissatisfaction at each airport is. That would help provide specific recommendations down to an airport level rather than on an airline level.
+
+
